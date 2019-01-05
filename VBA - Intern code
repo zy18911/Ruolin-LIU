@@ -252,13 +252,10 @@ Sub StandardMacro()
                     End If
 
                     Set InvDBWS = Workbooks.Open(InvDBPrefix & CStr(YM))
-                    '===========================Part1：马丁看这里，从这里开始加，包括头和行信息=========================
-                    '发票Header数据
-                    '根据发票代码+号码+日期匹配
-                    '发票数据库中U列为VBA文件C9格子的最后两个斜杠中间值，V列收票日期，按当年日期匹配会计期间.xlsx中对应的年月
-                    '若数据库中已有数据，且AA列状态为“未收票”，则将发票信息写入数据库L列-V列，并将AA列状态清空
-                    '若数据库中已有数据，且AA列状态为空，则在SourceWS.Sheets("Check Result")G列相应行标记为“重复发票”，不作其他操作
-                    '若数据库中无匹配数据，则将整行发票信息写入数据库A列-V列
+                   
+                   
+                   
+                   
                     LineRowNum = Application.CountA(InvDBWS.Sheets("Invoice Header").Range("A:A"))
 
                     For lr = 2 To LineRowNum
@@ -332,9 +329,6 @@ Sub StandardMacro()
         End If
     End If
    
-    '打开Sales List进行比对
-    '根据日期打开相应发票数据库清单，根据代码+号码+日期去匹配发票数据库中Invoice Header中的数据
-    '若找到匹配数据并且对应发票Y列“是否有销货清单”为“Y”或者“Y且有销货图片”
         '1.将对应发票行列标记为“Y且有销货图片”
         '2.将SalesList中EFG列进行处理，G列标记“匹配成功”，详见SalesList描述
         '3.将处理好的SalesList中对应行ABCF列，加到数据库SalesList中
