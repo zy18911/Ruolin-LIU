@@ -1,0 +1,562 @@
+Sub StandardMacro()
+'
+' StandardMacro Macro
+
+
+    '声明变量
+    Dim SourceWS, ExceptionWS, PreExceptionWS, TaxIdMappingWS, InvDBWS, AccountDateWS, SalesListWS As Workbook
+    Dim regX As Object
+    Dim yearDate, iValidation, SalesPath As String
+    Dim rng As Range
+    Dim flag, flag2 As Boolean
+    
+    yearDate = ThisWorkbook.Sheets("SourceData").Range("C8")
+    CopyToPath = ThisWorkbook.Sheets("SourceData").Range("C9")
+    InvDBPrefix = ThisWorkbook.Sheets("SourceData").Range("C12")
+    Set SourceWS = Workbooks.Open(ThisWorkbook.Sheets("SourceData").Range("C3"))
+    Set regX = CreateObject("vbscript.regeXP")
+    
+    Application.DisplayAlerts = False
+    Application.ScreenUpdating = False
+    
+    '打开会计期间对照表
+    Set AccountDateWS = Workbooks.Open(ThisWorkbook.Sheets("SourceData").Range("C13"))
+
+    '判断当前日期所属的会计期间,赋值给accountDate
+    todayDate = Val(Format(Date, "yyyymmdd"))                '得到数值型的当前日期yyyymmdd
+    DateRow = AccountDateWS.Sheets(1).UsedRange.Rows.Count   '统计会计期间表格的行数
+    For t = 2 To DateRow
+
+        If AccountDateWS.Sheets(1).Range("A" & CStr(t)).Value <= todayDate And AccountDateWS.Sheets(1).Range("B" & CStr(t)).Value >= todayDate Then
+        accountDate = AccountDateWS.Sheets(1).Range("C" & CStr(t)).Value
+        
+        Exit For
+        End If
+    
+    Next t
+    
+    AccountDateWS.Close False
+       
+    ThisWorkbook.Sheets("YM").Activate
+    Columns("A:B").Select
+    Selection.ClearContents
+
+    SourceWS.Worksheets(1).Activate
+    Sheets(1).Name = "Check Result"
+
+    '纳税主体名称去符号
+    Set TaxIdMappingWS = Workbooks.Open(ThisWorkbook.Sheets("SourceData").Range("C11"))
+    ComtoCH = "[^\u4e00-\u9fa5]" '取汉字
+    ComListRow = Application.CountA(TaxIdMappingWS.Sheets("纳税人名称匹配表").Range("A:A"))
+    For cr = 2 To ComListRow
+        With regX
+            .Global = True
+            .Pattern = ComtoCH
+            TaxIdMappingWS.Sheets("纳税人名称匹配表").Range("A" & CStr(cr)) = .Replace(TaxIdMappingWS.Sheets("纳税人名称匹配表").Range("A" & CStr(cr)), "")
+        End With
+    Next cr
+
+    'Rule判断
+    If SourceWS.Worksheets.Count = 3 Then
+        SourceWS.Sheets(2).Name = "Invoice Header"
+        SourceWS.Sheets(3).Name = "Invoice Line"
+        SourceWS.Sheets("Invoice Header").Activate
+        '调整日期格式
+        Columns("D:D").Select
+        Selection.Replace What:="年", Replacement:="", LookAt:=xlPart, _
+            SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+            ReplaceFormat:=False
+        Selection.Replace What:="月", Replacement:="", LookAt:=xlPart, _
+            SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+            ReplaceFormat:=False
+        Selection.Replace What:="日", Replacement:="", LookAt:=xlPart, _
+            SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+            ReplaceFormat:=False
+        '调整金额格式
+        Columns("M:O").Select
+        Selection.Replace What:="￥", Replacement:="", LookAt:=xlPart, _
+            SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+            ReplaceFormat:=False
+        HeaderRowNum = Application.CountA(SourceWS.Sheets("Invoice Header").Range("A:A"))
+        CheckRowNum = Application.CountA(SourceWS.Sheets("Check Result").Range("A:A"))
+        For i = 2 To HeaderRowNum
+
+            '判断开票日期是否超过360天
+            iToday = Format(Date, "yyyy-mm-dd")
+            iDate = SourceWS.Sheets("Invoice Header").Range("D" & CStr(i))
+            iDate = Left(iDate, 4) & "-" & Left(Right(iDate, 4), 2) & "-" & Right(iDate, 2)
+            If DateDiff("d", iDate, iToday) > 360 Then
+                SourceWS.Worksheets("Check Result").Activate
+                'For j = 2 To CheckRowNum
+                For Each targetCell In SourceWS.Sheets("Check Result").Range("B:B")
+                    If targetCell.Value = SourceWS.Sheets("Invoice Header").Range("C" & CStr(i)) Then
+                        targetCell.Offset(0, 5) = "验证错误：开票日期超过360天"
+                    End If
+                Next
+                'Next j
+            End If
+
+            '判断纳税主体与纳税人识别号是否匹配，仅保留汉字匹配
+            With regX
+                .Global = True
+                .Pattern = ComtoCH
+                iTaxperName = .Replace(SourceWS.Sheets("Invoice Header").Range("E" & CStr(i)), "")
+            'iTaxperName = Replace(Replace(Replace(Replace(Replace(Replace(Replace(SourceWS.Sheets("Invoice Header").Range("E" & CStr(i)), "(", ""), ")", ""), "（", ""), "）", ""), "[", ""), "]", ""), "<", "")
+                End With
+            iTaxpayerCode = Application.VLookup(iTaxperName, TaxIdMappingWS.Sheets("纳税人名称匹配表").Range("A:B"), 2, False)
+            If SourceWS.Sheets("Invoice Header").Range("F" & CStr(i)) <> CStr(iTaxpayerCode) Then
+                For Each targetCell In SourceWS.Sheets("Check Result").Range("B:B")
+                    If targetCell.Value = SourceWS.Sheets("Invoice Header").Range("C" & CStr(i)) Then
+                        targetCell.Offset(0, 5) = "验证错误：纳税主体与纳税人识别号不匹配"
+                        Exit For
+                    End If
+                Next
+            End If
+
+            '为qualified发票路径做准备
+            For Each targetCell In SourceWS.Sheets("Check Result").Range("B:B")
+                If targetCell.Value = SourceWS.Sheets("Invoice Header").Range("C" & CStr(i)) Then
+                    targetCell.Offset(0, 7) = iTaxperName
+                    targetCell.Offset(0, 8) = Left(SourceWS.Sheets("Invoice Header").Range("D" & CStr(i)), 6)
+                    Exit For
+                End If
+            Next
+
+        Next i
+        TaxIdMappingWS.Close
+
+        '删除验证错误行
+        For m = 2 To CheckRowNum
+            If InStr(SourceWS.Sheets("Check Result").Range("G" & CStr(m)), "验证错误") > 0 Or InStr(SourceWS.Sheets("Check Result").Range("G" & CStr(m)), "作废") > 0 Then
+                NeedDeleteInvNumber = SourceWS.Sheets("Check Result").Range("B" & CStr(m))
+                For n = 2 To HeaderRowNum
+                    If SourceWS.Sheets("Invoice Header").Range("C" & CStr(n)) = NeedDeleteInvNumber Then
+                        SourceWS.Sheets("Invoice Header").Activate
+                        SourceWS.Sheets("Invoice Header").Rows(CStr(n) & ":" & CStr(n)).Select
+                        Selection.Delete Shift:=xlUp
+                        Exit For
+                    End If
+                Next n
+            End If
+        Next m
+
+        '归档路径设置
+        CheckRowNum = Application.CountA(SourceWS.Sheets("Check Result").Range("A:A"))
+        SourceWS.Worksheets("Check Result").Activate
+        Range("H1").Select
+        ActiveCell.FormulaR1C1 = "归档路径"
+        Range("I1").Select
+        SourceWS.Sheets("Check Result").Range("I1") = CheckRowNum - 1
+        For i = 2 To CheckRowNum
+            If SourceWS.Sheets("Check Result").Range("G" & CStr(i)) = "一致" Then
+                'SourceWS.Sheets("Check Result").Range("H" & CStr(i)) = CopyToPath + "qualified"
+                SourceWS.Sheets("Check Result").Range("H" & CStr(i)) = CopyToPath & CStr(SourceWS.Sheets("Check Result").Range("I" & CStr(i))) & "\" & SourceWS.Sheets("Check Result").Range("J" & CStr(i))
+            ElseIf InStr(SourceWS.Sheets("Check Result").Range("G" & CStr(i)), "验证错误") > 0 Then
+                SourceWS.Sheets("Check Result").Range("H" & CStr(i)) = CopyToPath + "invalid"
+            Else
+                SourceWS.Sheets("Check Result").Range("H" & CStr(i)) = CopyToPath + "exception"
+            End If
+        Next i
+        If SourceWS.Worksheets.Count = 3 Then
+            SourceWS.Sheets("Invoice Header").Activate
+            Range("T1").Select
+            ActiveCell.FormulaR1C1 = "路径"
+            Range("S1").Select
+            Selection.Copy
+            Range("T1").Select
+            Selection.PasteSpecial Paste:=xlPasteFormats, Operation:=xlNone, _
+                SkipBlanks:=False, Transpose:=False
+            Application.CutCopyMode = False
+            HeaderRowNum = Application.CountA(ActiveSheet.Range("A:A"))
+            For i = 2 To HeaderRowNum
+                SourceWS.Sheets("Invoice Header").Range("T" & CStr(i)) = Application.VLookup(SourceWS.Sheets("Invoice Header").Range("C" & CStr(i)), SourceWS.Sheets("Check Result").Range("B:H"), 7, 0)
+                iDate = SourceWS.Sheets("Invoice Header").Range("D" & CStr(i))
+                iImagePath = SourceWS.Sheets("Invoice Header").Range("T" & CStr(i)) & "\" & iDate & "-" & SourceWS.Sheets("Invoice Header").Range("B" & CStr(i)) & "-" & SourceWS.Sheets("Invoice Header").Range("C" & CStr(i)) & ".jpg"
+                SourceWS.Sheets("Invoice Header").Range("T" & CStr(i)) = Chr(61) & "HYPERLINK(" & Chr(34) & iImagePath & Chr(34) & ")"
+            Next i
+        End If
+
+        '登记发票数据库
+        LineRowNum = Application.CountA(SourceWS.Sheets("Invoice Line").Range("A:A"))
+        SourceWS.Sheets("Invoice Header").Activate
+        HeaderRowNum2 = Application.CountA(SourceWS.Sheets("Invoice Header").Range("A:A"))
+        If HeaderRowNum2 > 1 Then
+            '计算本文件包含开票日期个数，为循环打开发票数据库准备
+            Columns("D:D").Select
+            Selection.Copy
+            ThisWorkbook.Sheets("YM").Activate
+            Range("A1").Select
+            ActiveSheet.Paste
+            Range("A1").Select
+            Application.CutCopyMode = False
+            Selection.Copy
+            Range("B1").Select
+            ActiveSheet.Paste
+            Application.CutCopyMode = False
+            Range("B2").Select
+            ActiveCell.FormulaR1C1 = "=LEFT(RC[-1],6)"
+            YMRowNum = Application.CountA(ThisWorkbook.Sheets("YM").Range("A:A"))
+            If YMRowNum > 2 Then
+                Range("B2").Select
+                Selection.AutoFill Destination:=Range("B2:B" & CStr(YMRowNum))
+            End If
+            Range("B2:B" & CStr(YMRowNum)).Select
+            Columns("B:B").Select
+            Selection.Copy
+            Range("B1").Select
+            Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks _
+                :=False, Transpose:=False
+            Columns("B:B").Select
+            Application.CutCopyMode = False
+            ActiveSheet.Range("B:B").RemoveDuplicates Columns:=1, Header:=xlYes
+            YMRowNum = Application.CountA(ThisWorkbook.Sheets("YM").Range("B:B"))
+
+            '依次循环过滤同一年月
+            SourceWS.Sheets("Invoice Header").Activate
+            Rows("1:1").Select
+            Selection.AutoFilter
+            Sheets.Add(after:=Sheets(Sheets.Count)).Name = "TEMP"
+            For i = 2 To YMRowNum
+                YM = ThisWorkbook.Sheets("YM").Range("B" & CStr(i))
+                SourceWS.Sheets("TEMP").Activate
+                Columns("A:S").Select
+                Selection.ClearContents
+                SourceWS.Sheets("Invoice Header").Activate
+
+                'ActiveSheet.Range("A:S").AutoFilter Field:=4, Criteria1:="=" & CStr(YM) & "*", _
+                    Operator:=xlAnd
+                ActiveSheet.Range("A:T").AutoFilter Field:=4, Criteria1:=">=" & Val(CStr(YM) & "01") & "" _
+                    , Operator:=xlAnd, Criteria2:="<=" & Val(CStr(YM) & "31")
+                Columns("A:T").Select
+                Selection.Copy
+                SourceWS.Sheets("TEMP").Activate
+                Range("A1").Select
+                ActiveSheet.Paste
+                '筛选出同一年月数据，开始匹配
+
+                reversepath = StrReverse(CopyToPath)     '把C9单元格的路径倒写
+                numpath = InStr(2, reversepath, "\")     '路径倒写后，获得第二次出现“\"字符时的序号
+
+                TempHeaderRowNum = Application.CountA(SourceWS.Sheets("TEMP").Range("A:A"))
+                For hr = 2 To TempHeaderRowNum
+
+                    SourceWS.Sheets("TEMP").Range("U" & CStr(hr)).Value = StrReverse(Mid(reversepath, 2, numpath - 2))   '获得C9单元格的最后两个斜杠中间值
+                    SourceWS.Sheets("TEMP").Range("V" & CStr(hr)).Value = accountDate                        '将会计期间对应的年月写入V列的收票日期
+
+                    flag = False
+                    flag2 = False
+                    countline = 0
+
+                    If Dir(InvDBPrefix & CStr(YM) & ".xlsx") = "" Then
+                        FileCopy ThisWorkbook.Sheets("SourceData").Range("C16"), InvDBPrefix & CStr(YM) & ".xlsx"
+                    End If
+
+                    Set InvDBWS = Workbooks.Open(InvDBPrefix & CStr(YM))
+                    '===========================Part1：马丁看这里，从这里开始加，包括头和行信息=========================
+                    '发票Header数据
+                    '根据发票代码+号码+日期匹配
+                    '发票数据库中U列为VBA文件C9格子的最后两个斜杠中间值，V列收票日期，按当年日期匹配会计期间.xlsx中对应的年月
+                    '若数据库中已有数据，且AA列状态为“未收票”，则将发票信息写入数据库L列-V列，并将AA列状态清空
+                    '若数据库中已有数据，且AA列状态为空，则在SourceWS.Sheets("Check Result")G列相应行标记为“重复发票”，不作其他操作
+                    '若数据库中无匹配数据，则将整行发票信息写入数据库A列-V列
+                    LineRowNum = Application.CountA(InvDBWS.Sheets("Invoice Header").Range("A:A"))
+
+                    For lr = 2 To LineRowNum
+
+                        If SourceWS.Sheets("TEMP").Range("B" & CStr(hr)).Value = InvDBWS.Sheets("Invoice Header").Range("B" & CStr(lr)).Value And _
+                        SourceWS.Sheets("TEMP").Range("C" & CStr(hr)).Value = InvDBWS.Sheets("Invoice Header").Range("C" & CStr(lr)).Value And _
+                        SourceWS.Sheets("TEMP").Range("D" & CStr(hr)).Value = InvDBWS.Sheets("Invoice Header").Range("D" & CStr(lr)).Value Then
+
+                            flag = True
+
+                            If InvDBWS.Sheets("Invoice Header").Range("AA" & CStr(lr)).Value = "未收票" Then
+
+                                Set rng = InvDBWS.Sheets("Invoice Header").Range("L" & CStr(lr))
+                                SourceWS.Sheets("TEMP").Range("L" & CStr(hr)).Resize(1, 11).Copy rng       '将TEMP中的发票信息写入数据库L-V列
+                                InvDBWS.Sheets("Invoice Header").Range("AA" & CStr(lr)).ClearContents
+
+                            ElseIf InvDBWS.Sheets("Invoice Header").Range("AA" & CStr(lr)).Value = "" Then
+
+                                flag2 = True
+                                SourceWS.Sheets("Check Result").Range("G" & CStr(SourceWS.Sheets("TEMP").Range("A" & CStr(hr)).Value + 1)).Value = "重复发票"
+
+                            End If
+
+                        Exit For     '若匹配成功，则跳出该For循环，此时参数lr用作下面在数据库中Invoice Header中对应行的Y列“是否有销货清单”为Y
+                        End If
+
+                    Next lr
+
+                    If flag = False Then
+
+                        Set rng = InvDBWS.Sheets("Invoice Header").Range("a65536").End(xlUp).Offset(1, 0)   '获得数据库文件的A列第一个空单元格
+                        SourceWS.Sheets("TEMP").Range("A" & CStr(hr)).Resize(1, 22).Copy rng                '将TEMP中的发票信息写入数据库
+
+                    End If
+
+                    '发票Line数据
+                    '若数据库中已有数据，且AA列状态为“未收票”或者若数据库中无匹配数据，则将对应同（代码+号码+日期）的Line数据(可能为1~多行)加至数据库“Invoice Line" sheet
+                    '若对应的发票行>7,则标记数据库中Invoice Header中对应行的Y列“是否有销货清单”为Y
+                    If flag2 = False Then
+
+                        LineRowNum2 = Application.CountA(SourceWS.Sheets("Invoice Line").Range("A:A"))
+
+                        For ls = 2 To LineRowNum2
+
+                            If SourceWS.Sheets("Invoice Line").Range("A" & CStr(ls)).Value = SourceWS.Sheets("TEMP").Range("B" & CStr(hr)).Value And _
+                            SourceWS.Sheets("Invoice Line").Range("B" & CStr(ls)).Value = SourceWS.Sheets("TEMP").Range("C" & CStr(hr)).Value Then
+
+                                Set rng = InvDBWS.Sheets("Invoice Line").Range("a65536").End(xlUp).Offset(1, 0)  '获得数据库Invoiece Line的A列第一个空单元格
+                                SourceWS.Sheets("Invoice Line").Range("A" & CStr(ls)).Resize(1, 12).Copy rng     '复制记录到数据库
+
+                                countline = countline + 1
+
+                            End If
+
+                        Next ls
+
+                        If countline > 7 Then
+
+                           InvDBWS.Sheets("Invoice Header").Range("Y" & CStr(lr)) = "Y"
+
+                        End If
+
+                    End If
+
+                    InvDBWS.Close True
+
+                Next hr
+
+            Next i
+
+        End If
+    End If
+   
+    '打开Sales List进行比对
+    '根据日期打开相应发票数据库清单，根据代码+号码+日期去匹配发票数据库中Invoice Header中的数据
+    '若找到匹配数据并且对应发票Y列“是否有销货清单”为“Y”或者“Y且有销货图片”
+        '1.将对应发票行列标记为“Y且有销货图片”
+        '2.将SalesList中EFG列进行处理，G列标记“匹配成功”，详见SalesList描述
+        '3.将处理好的SalesList中对应行ABCF列，加到数据库SalesList中
+     '若找到匹配数据并且对应发票Y列“是否有销货清单”为空
+        '1.将SalesList中FG列进行处理，G列标记“匹配失败”，详见SalesList描述
+    '若没有找到匹配数据
+        '1.将SalesList中FG列进行处理，G列标记“匹配失败”，详见SalesList描述
+    Set SalesListWS = Workbooks.Open(ThisWorkbook.Sheets("SourceData").Range("C15"))        '打开Sales List表单
+       
+    SalesRowNum = Application.CountA(SalesListWS.Sheets("Check Result").Range("A:A"))
+    
+    If SalesRowNum >= 2 Then
+    
+        SalesListWS.Sheets("Check Result").Columns("A:G").AutoFilter
+        SalesListWS.Sheets.Add(after:=Sheets(Sheets.Count)).Name = "YM"
+        SalesListWS.Sheets.Add(after:=Sheets(Sheets.Count)).Name = "TEMP"
+        
+        SalesListWS.Sheets("Check Result").Columns("C").Copy SalesListWS.Sheets("YM").Range("A1")
+        
+        For lt = 1 To SalesRowNum
+        
+            SalesListWS.Sheets("YM").Range("B" & CStr(lt)) = Left(SalesListWS.Sheets("YM").Range("A" & CStr(lt)), 6)
+                            
+        Next lt
+        
+        SalesListWS.Sheets("YM").Activate
+        Columns("B:B").Select
+        Selection.Copy
+        Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks:=False, Transpose:=False
+        Application.CutCopyMode = False
+        ActiveSheet.Range("B:B").RemoveDuplicates Columns:=1, Header:=xlYes
+                
+        YMRowNum = Application.CountA(SalesListWS.Sheets("YM").Range("B:B"))
+        
+        For lw = 2 To YMRowNum
+        
+            YM = SalesListWS.Sheets("YM").Range("B" & CStr(lw)).Value
+            
+            SalesListWS.Sheets("Check Result").Activate
+            
+            ActiveSheet.Columns("A:G").AutoFilter Field:=3, Criteria1:="=" & CStr(YM) & "*", Operator:=xlAnd
+            Columns("A:G").Select
+            Selection.Copy
+            SalesListWS.Sheets("TEMP").Activate
+            Range("A1").Select
+            ActiveSheet.Paste
+            
+            If Dir(InvDBPrefix & CStr(YM) & ".xlsx") = "" Then
+                FileCopy ThisWorkbook.Sheets("SourceData").Range("C16"), InvDBPrefix & CStr(YM) & ".xlsx"
+            End If
+            
+            Set InvDBWS = Workbooks.Open(InvDBPrefix & CStr(YM))
+            
+            LineRowNum = Application.CountA(InvDBWS.Sheets("Invoice Header").Range("A:A"))
+            TempRowNum = Application.CountA(SalesListWS.Sheets("TEMP").Range("A:A"))
+            
+            For lx = 2 To TempRowNum
+            
+                flag = False
+                                        
+                '将C列路径倒写后，读取第一个"\"字符出现的位置，并且计算路径的总长度
+                SalesPath = CStr(SalesListWS.Sheets("TEMP").Range("D" & CStr(lx)).Value)
+                numpath = InStr(1, StrReverse(SalesPath), "\")
+                lenpath = Len(SalesPath)
+                
+                For ly = 2 To LineRowNum
+                
+                    If SalesListWS.Sheets("TEMP").Range("A" & CStr(lx)).Value = InvDBWS.Sheets("Invoice Header").Range("B" & CStr(ly)).Value And _
+                    SalesListWS.Sheets("TEMP").Range("B" & CStr(lx)).Value = InvDBWS.Sheets("Invoice Header").Range("C" & CStr(ly)).Value And _
+                    SalesListWS.Sheets("TEMP").Range("C" & CStr(lx)).Value = InvDBWS.Sheets("Invoice Header").Range("D" & CStr(ly)).Value Then
+                                    
+                        flag = True     '标记匹配到数据
+                        
+                        If InvDBWS.Sheets("Invoice Header").Range("Y" & CStr(ly)).Value = "Y" Or InvDBWS.Sheets("Invoice Header").Range("Y" & CStr(ly)).Value = "Y且有销货图片" Then
+                        
+                            InvDBWS.Sheets("Invoice Header").Range("Y" & CStr(ly)).Value = "Y且有销货图片"
+                            SalesListWS.Sheets("TEMP").Range("G" & CStr(lx)).Value = "匹配成功"
+                            SalesListWS.Sheets("TEMP").Range("E" & CStr(lx)).Value = InvDBWS.Sheets("Invoice Header").Range("E" & CStr(ly)).Value
+                            SalesListWS.Sheets("TEMP").Range("F" & CStr(lx)).Value = Left(SalesPath, lenpath - numpath + 1) & CStr _
+                            (SalesListWS.Sheets("TEMP").Range("E" & CStr(lx)).Value) & CStr(YM) & "\" & Right(SalesPath, numpath - 1)  '生成归档路径
+                            '将SalesList中的ABCF列回写到数据库
+                            Set rng = InvDBWS.Sheets("SalesList").Range("A65536").End(xlUp).Offset(1, 0)      '获得数据库的A列第一个空单元格
+                            SalesListWS.Sheets("TEMP").Range("A" & CStr(lx)).Resize(1, 3).Copy rng    '将A-C列的信息写入数据库
+                            Set rng = InvDBWS.Sheets("SalesList").Range("D65536").End(xlUp).Offset(1, 0)      '获得数据库的D列第一个空单元格
+                            SalesListWS.Sheets("TEMP").Range("F" & CStr(lx)).Copy rng                 '将F列的信息写入数据库的D列
+                        
+                        ElseIf InvDBWS.Sheets("Invoice Header").Range("Y" & CStr(ly)).Value = "" Then
+                        
+                            SalesListWS.Sheets("TEMP").Range("G" & CStr(lx)).Value = "匹配失败"
+                            SalesListWS.Sheets("TEMP").Range("F" & CStr(lx)).Value = Left(SalesPath, lenpath - numpath + 1) & _
+                            "exception\" & Right(SalesPath, numpath - 1)           '生成归档路径
+                                        
+                        End If
+                    
+                    Exit For     '如果匹配成功，则跳出遍历数据库Invoice Header表格的循环
+                    
+                    End If
+                                
+                Next ly
+                    
+                If flag = False Then     '遍历数据库表格后，未匹配成功
+                
+                    SalesListWS.Sheets("TEMP").Range("G" & CStr(lx)).Value = "匹配失败"
+                    SalesListWS.Sheets("TEMP").Range("F" & CStr(lx)).Value = Left(SalesPath, lenpath - numpath + 1) & _
+                    "exception\" & Right(SalesPath, numpath - 1)
+                
+                End If
+            
+            Next lx
+            
+            '将SaelesList工作簿TEMP中的EFG列数据通过Vlookup回写到Check Result中
+            For lt = 2 To SalesRowNum
+            
+                SalesE = Application.VLookup(SalesListWS.Sheets("Check Result").Range("D" & CStr(lt)), SalesListWS.Sheets("TEMP").Columns("D:G"), 2, False)
+                If Application.WorksheetFunction.IsError(SalesE) = False Then
+                    SalesListWS.Sheets("Check Result").Range("E" & CStr(lt)) = SalesE
+                End If
+                        
+                SalesF = Application.VLookup(SalesListWS.Sheets("Check Result").Range("D" & CStr(lt)), SalesListWS.Sheets("TEMP").Columns("D:G"), 3, False)
+                If Application.WorksheetFunction.IsError(SalesF) = False Then
+                    SalesListWS.Sheets("Check Result").Range("F" & CStr(lt)) = SalesF
+                End If
+                                       
+                SalesG = Application.VLookup(SalesListWS.Sheets("Check Result").Range("D" & CStr(lt)), SalesListWS.Sheets("TEMP").Columns("D:G"), 4, False)
+                If Application.WorksheetFunction.IsError(SalesG) = False Then
+                    SalesListWS.Sheets("Check Result").Range("G" & CStr(lt)) = SalesG
+                End If
+                
+            Next lt
+            
+            InvDBWS.Close True
+            
+            SalesListWS.Sheets("TEMP").Columns("A:G").ClearContents
+                                                    
+        Next lw
+                      
+    End If
+            
+    '全部完成后需要将匹配失败的数据加到异常报告中，往下拉见Part3
+    
+    '异常报告处理，清空异常报告内容
+    If Dir(ThisWorkbook.Sheets("SourceData").Range("C7")) = "" Then
+        FileCopy ThisWorkbook.Sheets("SourceData").Range("C4"), ThisWorkbook.Sheets("SourceData").Range("C7")
+    End If
+    
+    Set ExceptionWS = Workbooks.Open(ThisWorkbook.Sheets("SourceData").Range("C7"))
+    Sheets("List1").AutoFilterMode = False
+    Range("A2").Select
+    Range(Selection, Selection.End(xlDown)).Select
+    Selection.ClearContents
+    Range("B2").Select
+    Range(Selection, Selection.End(xlDown)).Select
+    Selection.ClearContents
+    Range("C2").Select
+    Range(Selection, Selection.End(xlDown)).Select
+    Selection.ClearContents
+    
+    '预处理错误异常登记
+    If Dir(ThisWorkbook.Sheets("SourceData").Range("C10")) <> "" Then
+        Set PreExceptionWS = Workbooks.Open(ThisWorkbook.Sheets("SourceData").Range("C10"))
+        PreExceptionRowNum = Application.CountA(PreExceptionWS.Sheets("List").Range("A:A"))
+        PreExceptionWS.Sheets("List").Activate
+        PreExceptionWS.Sheets("List").Range("B2:B" & PreExceptionRowNum).Select
+        Selection.Copy
+        ExceptionWS.Sheets("List1").Activate
+        ExceptionWS.Sheets("List1").Range("A2").Select
+        Selection.PasteSpecial Paste:=xlPasteValues, Operation:=xlNone, SkipBlanks _
+        :=False, Transpose:=False
+        PreExceptionWS.Sheets("List").Activate
+        PreExceptionWS.Sheets("List").Range("D2:E" & PreExceptionRowNum).Select
+        Selection.Copy
+        ExceptionWS.Sheets("List1").Activate
+        ExceptionWS.Sheets("List1").Range("B2").Select
+        ActiveSheet.Paste
+        PreExceptionWS.Close
+        Kill (ThisWorkbook.Sheets("SourceData").Range("C10"))
+    End If
+
+    '发票验证平台发票记录异常登记
+    ExceptionRowNum = Application.CountA(ExceptionWS.Sheets("List1").Range("A:A")) + 1
+    SourceWS.Worksheets("Check Result").Activate
+    For i = 2 To CheckRowNum
+        If SourceWS.Sheets("Check Result").Range("G" & CStr(i)) <> "一致" Then
+            ExceptionWS.Sheets("List1").Range("A" & CStr(ExceptionRowNum)) = SourceWS.Sheets("Check Result").Range("B" & CStr(i))
+            ExceptionWS.Sheets("List1").Range("B" & CStr(ExceptionRowNum)) = SourceWS.Sheets("Check Result").Range("G" & CStr(i))
+            iImagePath = SourceWS.Sheets("Check Result").Range("H" & CStr(i)) & "\" & SourceWS.Sheets("Check Result").Range("C" & CStr(i)) & "-" & SourceWS.Sheets("Check Result").Range("A" & CStr(i)) & "-" & SourceWS.Sheets("Check Result").Range("B" & CStr(i)) & ".jpg"
+            ExceptionWS.Sheets("List1").Range("C" & CStr(ExceptionRowNum)) = Chr(61) & "HYPERLINK(" & Chr(34) & iImagePath & Chr(34) & ")"
+            ExceptionRowNum = ExceptionRowNum + 1
+        End If
+    Next i
+    
+    '===========================Part3：
+    If SalesRowNum >= 2 Then
+    
+        For lt = 2 To SalesRowNum
+        
+            If SalesListWS.Sheets("Check Result").Range("G" & CStr(lt)).Value = "匹配失败" Then
+            
+                ExceptionRowNum = Application.CountA(ExceptionWS.Sheets("List1").Range("A:A"))
+                ExceptionWS.Sheets("List1").Range("A" & CStr(ExceptionRowNum + 1)).Value = CStr(SalesListWS.Sheets("Check Result"). _
+                Range("B" & CStr(lt)).Value)
+                ExceptionWS.Sheets("List1").Range("B" & CStr(ExceptionRowNum + 1)).Value = "销货清单匹配失败"
+                ExceptionWS.Sheets("List1").Range("C" & CStr(ExceptionRowNum + 1)).Value = SalesListWS.Sheets("Check Result"). _
+                Range("F" & CStr(lt)).Value
+                
+            End If
+        
+        Next lt
+    
+    End If
+    
+    ExceptionWS.Save
+    ExceptionWS.Close
+    
+    SalesListWS.Sheets("Check Result").AutoFilterMode = False
+    SalesListWS.Close True
+        
+    SourceWS.Save
+    SourceWS.Close
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+        
+End Sub
+
+
